@@ -1,0 +1,281 @@
+#include <SD.h> // Bibliothèque pour gérer la carte SD
+#include <Wire.h> // Bibliothèque pour la communication I2C
+#include <U8g2lib.h> // Bibliothèque pour l'écran OLED
+#include <TinyGPS++.h> // Bibliothèque pour le GPS NEO-6M
+
+#define GPS_RX_PIN  16 // RX2 TX du NEO-6M
+#define GPS_TX_PIN  17 // TX2  RX du NEO-6M
+#define PIN_SPI_CS 5 // Définition de la broche CS de la carte SD (GPIO5)
+#define GPS_BAUDRATE 9600 // The default baudrate of NEO-6M is 9600
+
+File myFile; // Déclaration de l'objet fichier
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE); // Création de l'objet écran OLED SH1106 en I2C
+TinyGPSPlus gps; // the TinyGPS++ object
+
+// Variables pour la trajectoire
+double reference_lat = 0;
+double reference_lng = 0;
+
+const double LONDON_LAT = 51.508131;
+const double LONDON_LON = -0.128002;
+
+bool verification = false;
+bool reference_initialisee = false; // Etat initial
+
+double distance_total = 0.0;
+double variation;
+
+double distance_cumulee = 0.0; // Distance cumulée
+const float distance_enregistrement = 20.0; // Distance d'enregistrement en metres 
+double ancienne_lat = 0;
+double ancienne_lng = 0;
+bool premier_point = true;
+
+double distance_reference = 0;
+bool premiere_mesure = true;
+// Fonction principale qui récupère les données GPS
+void int_fichier()
+{
+  myFile = SD.open("/Data_GPS.txt");
+  String Data_GPS = String(gps.location.lat(), 6) + "\t" + String(gps.location.lng(), 6) + "\t" + String(gps.altitude.meters()) + "\t" + String(gps.date.year()) + "/" + String(gps.date.month()) + "/" + String(gps.date.day()) + "\t" + String((gps.time.hour() + 2) % 24) + "\t" + String(gps.time.minute()) +"\r\n";
+  writeFile(SD, "/Data_GPS.txt", "Latitude,      Longitude,    Altitude,   Date,          Heures, Minutes\r\n"); // Création du fichier avec les titres des colonnes
+  Serial.println(Data_GPS);  // Afficher dans le moniteur série
+  appendFile(SD, "/Data_GPS.txt", Data_GPS.c_str()); // Sauvegarde sur la carte SD
+  myFile.close(); // Fermer le fichier
+}
+// Ecrire sur la carte SD
+void writeFile(fs::FS &fs, const char * path, const char * message)
+{
+  File myFile = fs.open(path , FILE_WRITE);
+  if(!myFile)// Vérifie si le fichier a bien été ouvert
+    {
+      Serial.println("Pas de carte SD");// Message d'erreur si ouverture impossible
+    return;
+    }
+  if(myFile.print(message)) // Écrit le message dans le fichier
+    {
+      Serial.println("Il y a le carte SD"); // Confirmation d’écriture réussie
+    }
+  else
+    {
+      Serial.println("Erreur d'ecriture");// Message d’erreur si écriture impossible
+    }
+  myFile.close();// Fermer le fichier
+}
+ 
+// Ecrire du texte dans la carte SD
+void appendFile(fs::FS &fs, const char * path, const char * message)
+{
+  File myFile = fs.open(path, FILE_APPEND); // Ouvre le fichier en mode ajout
+  if(!myFile) // Vérifie si le fichier a bien été ouvert
+    {
+      Serial.println("Erreur d'ouverture du fichier pour l'ajout"); // Message d’erreur si ouverture impossible
+      return;
+    }
+  if(myFile.print(message)) // Ajoute le message à la fin du fichier
+    {
+      Serial.println("Message ajouter"); // Confirmation d’ajout réussi
+    }
+  else
+    {
+      Serial.println("Erreur d'ajout"); // Message d’erreur si ajout impossible
+    }
+  myFile.close(); // Fermer le fichier
+}
+
+void creation_fichier()
+{
+  if (!SD.begin(PIN_SPI_CS)) // Vérification de la présence de la carte SD
+  {
+    Serial.println(F("Carte sd pas présente!"));
+  }
+  if (!SD.exists("/Data_GPS.txt"))
+  {
+    Serial.println(F("SD CARD Initialiser.")); // Message de confirmation dans le moniteur série
+    writeFile(SD, "/Data_GPS.txt", "Latitude,      Longitude,    Altitude,   Date,          Heures, Minutes\r\n"); // Création du fichier avec les titres des colonnes  
+  }
+
+  myFile = SD.open("/Data_GPS.txt", FILE_READ); // Ouvre et crée le fichier Data_GPS en lecture
+  if (myFile) // Vérifie si le fichier existe
+  {
+    while (myFile.available()) // Lecture du fichier caractère par caractère
+    {
+      char ch = myFile.read(); // Lecture d'un caractère
+    }
+  myFile.close(); // Fermeture du fichier
+  }
+}
+
+//Fonction pour afficher le GPS sur l'écran
+void affichage_gps_ecran()
+{
+    u8g2.clearBuffer(); // Efface le contenu actuel du buffer écran
+    u8g2.setFont(u8g2_font_6x10_tf); // Définit la police d'écriture
+ 
+    u8g2.setCursor(10, 20); // Positionne le curseur écran
+    u8g2.print("Latitude:"); // Affiche le texte Latitude
+    Serial.print("Latitude :"); // Affiche texte dans le moniteur série
+    u8g2.print(gps.location.lat(), 6); // Affiche la latitude sur OLED
+    Serial.println(gps.location.lat(), 6); // Affiche la latitude dans le moniteur série
+ 
+    u8g2.setCursor(10, 30); // Positionne le curseur ligne suivante
+    u8g2.print("Longitude:"); // Affiche le texte Longitude
+    Serial.print("Longitude :"); // Affiche texte dans le moniteur série
+    u8g2.print(gps.location.lng(), 6); // Affiche la longitude sur OLED
+    Serial.println(gps.location.lng(), 6); // Affiche la longitude dans le moniteur série
+ 
+    u8g2.setCursor(10, 40); // Positionne le curseur ligne suivante
+    u8g2.print("Altitude:"); // Affiche le texte Altitude
+    Serial.print("Altitude :"); // Affiche texte dans le moniteur série
+    u8g2.print(gps.altitude.meters()); // Affiche l'altitude sur OLED
+    Serial.println(gps.altitude.meters()); // Affiche l'altitude dans le moniteur série
+ 
+    u8g2.setCursor(10, 50); // Positionne le curseur ligne suivante
+    u8g2.print("Date:"); // Affiche le texte Date
+    Serial.print(F("Date&time:")); // Affiche texte date et heure dans le moniteur série
+    Serial.print("Distance parcourue : ");
+    Serial.print(variation, 1);
+    Serial.println(" m");
+
+    // Affichage distance sur OLED
+    u8g2.setCursor(10, 60);
+    u8g2.print("Dist_par:");
+    u8g2.print(distance_total, 1);
+    Serial.println(distance_total, 1);
+    u8g2.print("m");
+
+}
+//Fonction pour calculer la distance du GPS
+void gps_calcule_distance()
+{
+  if (!gps.location.isValid()) 
+  return;
+
+  double latitude = gps.location.lat();
+  double longitude = gps.location.lng();
+
+  // Premier point
+  if (premier_point)
+  {
+    ancienne_lat = latitude;
+    ancienne_lng = longitude;
+    int_fichier(); // enregistre le premier point
+
+    premier_point = false;
+    return;
+  }
+
+  double distance = TinyGPSPlus::distanceBetween(ancienne_lat, ancienne_lng, latitude, longitude);
+
+  Serial.print("Distance : ");
+  Serial.println(distance);
+
+  if (distance >= 20.0)
+  {
+    int_fichier();
+    distance_total += distance;
+
+    // Le nouveau point devient la référence
+    ancienne_lat = latitude;
+    ancienne_lng = longitude;
+
+    Serial.println("Point enregistre");
+  }
+}
+
+// Ecriture sur la carte SD
+void ecriture_carteSD()
+{
+  if (distance_cumulee >= distance_enregistrement)
+    {
+      Serial.println("Distance atteinte -> sauvegarde");
+      String Data_GPS = String(gps.location.lat(), 6) + "\t" + String(gps.location.lng(), 6) + "\t" + String(gps.altitude.meters()) + "\t" + String(gps.date.year()) + "/" + String(gps.date.month()) + "/" + String(gps.date.day()) + "\t" + String((gps.time.hour() + 2) % 24) + "\t" + String(gps.time.minute()) +"\r\n";
+      writeFile(SD, "/Data_GPS.txt", "Latitude,      Longitude,    Altitude,   Date,          Heures, Minutes\r\n"); // Création du fichier avec les titres des colonnes
+      appendFile(SD, "/Data_GPS.txt", Data_GPS.c_str()); // Ecriture dans la carte SD
+    }
+}
+// Pour afficher un texte quand on attend des data GPS
+void image_erreur()
+{
+  if (verification == false)
+  { 
+    u8g2.setFont(u8g2_font_6x10_tf); // Définit la police d'écriture
+    u8g2.clearBuffer(); // Efface le contenu actuel du buffer écran    
+    u8g2.setCursor(10, 20);
+    u8g2.print("En attente ");
+
+    u8g2.setCursor(10, 30);
+    u8g2.print("de");
+
+    u8g2.setCursor(10, 40);
+    u8g2.print("data GPS...");
+
+    u8g2.sendBuffer();
+  }
+}
+
+// Ecriture de la date sur l'écran U8G2
+void date()
+{
+   if (gps.date.isValid() && gps.time.isValid()) // Verification si la date/temps et valide
+    {
+      verification = true;
+      u8g2.clearBuffer(); // Efface le contenu actuel du buffer écran    
+      u8g2.setCursor(40, 50);
+      u8g2.print(gps.date.year()); // Affiche l'année
+      u8g2.print(F("-")); // Affiche séparateur
+      u8g2.print(gps.date.month()); // Affiche le mois
+      u8g2.print(F("-")); // Affiche séparateur
+      u8g2.print(gps.date.day()); // Affiche le jour
+      u8g2.print(F(" ")); // Affiche espace
+      u8g2.print(gps.time.hour() + 2); // Affiche l'heure (+2 fuseau horaire)
+      Serial.println(gps.time.hour() + 2); // Affiche l'heure (+2 fuseau horaire)
+      u8g2.print(F(":")); // Affiche séparateur heure
+      u8g2.print(gps.time.minute()); // Affiche les minutes
+    }  
+    //else 
+    //{
+    //  verification == false; 
+    //}
+}
+void setup()
+{
+ 
+  Wire.begin(21, 22); // SDA = Pin21, SCL = Pin22
+  u8g2.begin(); // Initialisation de l'écran OLED
+  u8g2.enableUTF8Print(); // Permet l'affichage des caractères UTF8 (accents, etc.)
+  Serial.begin(9600); // Initialisation du port série à 9600 bauds
+  Serial2.begin(GPS_BAUDRATE, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+
+  creation_fichier();
+  int_fichier(); //apelle de la fonction int_fichier
+}
+void loop()
+{
+    affichage_gps_ecran();
+
+    image_erreur();
+
+    // Permet de lire toutes les données disponibles du GPS si valide
+    while (Serial2.available())
+    {
+      gps.encode(Serial2.read()); // Décode chaque caractères reçu
+    }
+
+    // Vérification si la nouvelle donnée GPS a été reçu
+    if (gps.location.isUpdated()) 
+    {
+      gps_calcule_distance();
+
+      gps.encode(Serial2.read()); // Décode chaque caractères reçu
+
+      Serial.println();
+
+      Serial.println("GPS UPDATE");
+
+      date();
+
+      u8g2.sendBuffer();
+    }
+
+}  
